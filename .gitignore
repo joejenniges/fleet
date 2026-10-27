@@ -31,3 +31,11 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# fleet
+/fleet
+/fleet.exe
+/dist/
+*.db
+*.db-wal
+*.db-shm

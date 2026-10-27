@@ -1,0 +1,21 @@
+version: 2
+project_name: fleet
+
+builds:
+  - main: ./cmd/fleet
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X github.com/joejenniges/fleet/internal/cli.Version={{.Version}}
+
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: checksums.txt
+
+# TODO: add a Homebrew tap (brews:) and a Scoop bucket (scoops:) once the repo is public.

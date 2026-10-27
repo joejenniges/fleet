@@ -1,0 +1,23 @@
+# <config dir>/fleet/config.toml — all fields optional; these are the defaults.
+
+[runs]
+max_age = ""                # "" keeps run history forever; e.g. "180d"
+max_output_bytes = 262144   # captured output per run (the tail is kept)
+compact_after = "14d"       # older runs keep only the last N lines of output
+compact_keep_lines = 40
+
+[docs]
+top_n = 10                  # commands shown at session start
+top_window = "90d"          # execution counts look back this far
+known_mark_ttl = "14d"      # "already in CLAUDE.md" marks expire after this
+known_bad_action = "block"  # block | off
+
+[hooks]
+timeout = "2s"
+session_start_timeout = "5s"
+scan_processes = true       # track listeners an agent starts (PostToolUse on Bash)
+scan_min_interval = "3s"
+
+[redact]
+# Extra regexes; the whole match is replaced with ***.
+patterns = []

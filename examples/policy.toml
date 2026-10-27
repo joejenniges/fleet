@@ -1,0 +1,31 @@
+# Example user-level policy (<config dir>/fleet/policy.toml).
+# Create rules with `fleet policy add …` rather than editing by hand; this file shows the shape.
+#
+# Rules: the most restrictive match across all levels wins (never > ask > kill).
+# Defaults: the most specific level that sets a field wins (repo > user > global > builtin).
+# Builtin rules already protect DB clients (sqlcmd, psql, mysql, …) and migrations.
+
+[defaults]
+unknown = "ask"        # never | ask | kill — processes no rule matches
+grace = "10s"          # SIGTERM -> SIGKILL window on Unix; wait-for-agent window on Windows
+on_timeout = "notify"  # what happens when an `ask` deadline passes: notify | kill
+
+[[rule]]
+id = "node-dev"
+name = ["node", "vite", "next-server", "esbuild", "webpack"]
+action = "kill"
+grace = "3s"
+reason = "dev servers are stateless"
+
+[[rule]]
+id = "test-browsers"
+name = ["chrome", "chromium", "msedge"]
+args_contains = "chrome-devtools-mcp"
+action = "kill"
+reason = "browser instances started for UI testing"
+
+[[rule]]
+id = "docker-compose"
+name = ["docker", "docker-compose"]
+action = "ask"
+reason = "may be shared by several projects"
