@@ -472,6 +472,10 @@ fleet waits [--mine] [--all]          fleet signals
     always fire SessionEnd). `block` mode is the fallback for Claude Code versions without
     `asyncRewake`. A blocking wait that timed out is also picked up by the Stop hook, so "end
     your turn" always works.
+    Claude Code enforces `timeout` on `asyncRewake` hooks (600 s default, unlike plain `async`
+    hooks), so `fleet install` writes a timeout of `signals.max_wait` + 1 min on the async Stop
+    hook. In `claude -p`, Claude Code kills async hooks still running at teardown, so the async
+    wake only works for interactive sessions; headless agents must use blocking `fleet wait`.
   - A signal that arrives while the agent is mid-turn is delivered by the next
     UserPromptSubmit/PostToolUse hook instead.
 - **Expiry and cleanup**: waits expire after `signals.max_wait` (24 h); SessionEnd and reaping
@@ -587,13 +591,15 @@ Three layers:
 
 - Should repo-level permissive changes require approval if the repo file is committed and
   reviewed in PRs anyway? (Current answer: yes — PR review happens too late.)
-- Exit codes for hook-recorded Bash runs depend on what the agent reports; Claude Code's
-  `tool_response` shape should be verified and parsed when it includes one.
+- Exit codes for hook-recorded Bash runs: Claude Code's Bash `tool_response` is
+  `{stdout, stderr, interrupted, isImage}` (hooks reference, Oct 2026) — no exit code, so
+  hook-recorded runs have NULL exit codes. Only `fleet run` records them. Could we infer
+  failure some other way, or is pushing agents toward `fleet run` enough?
 - Should `fleet run` auto-suggest `docs add` after a failure followed by a success with the same
   first two tokens? (Likely yes, phase 3.)
 - `asyncRewake` behavior to confirm: does Claude Code keep (or kill) a background Stop hook
-  when the next turn starts, and what happens to it in `claude -p` when the process exits?
-  fleet tolerates either (single-waiter claim, agent-process liveness check), but the answer
-  decides whether `--wake async` works for headless agents or only interactive ones.
+  when the next turn starts? fleet tolerates either (single-waiter claim). The headless half is
+  answered: `claude -p` kills running async hooks at teardown, so `--wake async` is
+  interactive-only.
 - Should waits carry an optional "who can provide this" hint (repo, agent kind) to make
   discovery more targeted than "everyone sees everything"?

@@ -25,8 +25,10 @@ What was **not** verified (do these first):
    `claude-code-guide` agent can help) and adjust:
    - hook payload fields used in `internal/hooks/hooks.go` (`session_id`, `cwd`, `tool_name`,
      `tool_input.command`, `tool_input.file_path`, `tool_response`, `source`);
-   - the Bash `tool_response` shape — `parseToolResponse` guesses at exit-code field names;
-     find the real one so hook-recorded runs get exit codes (today they may be NULL);
+   - the Bash `tool_response` shape — per the hooks reference (Oct 2026) it is
+     `{stdout, stderr, interrupted, isImage}` with **no exit code**, so hook-recorded runs have
+     NULL exit codes; `parseToolResponse`'s exit-code guesses are harmless but will not match.
+     Re-check on the installed version by logging a real payload with `FLEET_DEBUG=1`;
    - output format: `hookSpecificOutput.additionalContext` for SessionStart /
      UserPromptSubmit / PostToolUse, and `permissionDecision: "deny"` +
      `permissionDecisionReason` for PreToolUse;
@@ -34,7 +36,9 @@ What was **not** verified (do these first):
    - the Stop hook's `asyncRewake: true` field and its semantics (background run; exit 2 wakes
      the agent with stderr as a system reminder) — documented in the hooks reference as of
      Oct 2026, but verify on the installed version. If it's missing, install with
-     `fleet install claude --wake block`;
+     `fleet install claude --wake block`. Known from the docs: `timeout` IS enforced on
+     asyncRewake hooks (600 s default — install now writes `max_wait` + 1 min), and `claude -p`
+     kills async hooks at teardown (async wake is interactive-only);
    - CLI flags used by `internal/testkit/claude.go`: `-p`, `--output-format json`,
      `--settings`, `--mcp-config`, `--strict-mcp-config`, `--allowedTools`, `--max-turns`,
      `--model`; and `claude mcp add/remove --scope` used by `internal/install`.
@@ -124,7 +128,7 @@ go test ./...
 - `TestPID` walks ancestors up to the owning agent's process; for untracked processes it stops
   at the first shell. Revisit once leases/preemption use it heavily.
 - `fleet run` captures through pipes; for a human at a TTY it skips capture. Phase 3: pty.
-- `parseToolResponse` needs the real Claude Code shape (see above).
+- Hook-recorded Bash runs have no exit code (Claude Code doesn't report one; see above).
 - Recipes, git export/import of repo docs (phase 3); adapters for Codex/Gemini/Cursor and a
   TUI (phase 4).
 - Release: `.goreleaser.yaml` is a starting point; add a Homebrew tap / Scoop bucket when ready.

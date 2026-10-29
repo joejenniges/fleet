@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/joejenniges/fleet/internal/config"
 )
 
 //go:embed skill/SKILL.md
@@ -44,10 +46,10 @@ func HookEntries(bin, wake string) map[string][]map[string]any {
 	var stop map[string]any
 	if wake == WakeBlock {
 		stop = map[string]any{"hooks": []any{map[string]any{"type": "command",
-			"command": cmd("stop") + " --wake block", "timeout": 600}}}
+			"command": cmd("stop") + " --wake block", "timeout": blockStopTimeout()}}}
 	} else {
 		stop = map[string]any{"hooks": []any{map[string]any{"type": "command",
-			"command": cmd("stop") + " --wake async", "asyncRewake": true}}}
+			"command": cmd("stop") + " --wake async", "asyncRewake": true, "timeout": asyncStopTimeout()}}}
 	}
 	return map[string][]map[string]any{
 		"SessionStart":     {entry("", "session-start", 10)},
@@ -86,6 +88,32 @@ func BinaryPath() string {
 func isFleetHook(cmd string) bool {
 	return strings.Contains(cmd, " hook ") && strings.Contains(cmd, "--agent claude") &&
 		(strings.Contains(cmd, "fleet") || strings.Contains(cmd, "FLEET"))
+}
+
+// asyncStopTimeout is the Claude Code timeout (seconds) for the background Stop hook.
+// WHY: Claude Code enforces `timeout` on asyncRewake hooks (unlike plain async ones),
+// with a 600 s default. Without an explicit value the waiter is killed after 10
+// minutes and an idle agent never wakes for a longer wait. The hook stops itself at
+// signals.max_wait, so this only needs to be at least that, plus slack.
+func asyncStopTimeout() int {
+	maxWait := 24 * time.Hour
+	if cfg, err := config.Load(); err == nil && cfg.Signals.MaxWait.Duration > maxWait {
+		maxWait = cfg.Signals.MaxWait.Duration
+	}
+	return int((maxWait + time.Minute) / time.Second)
+}
+
+// blockStopTimeout keeps the blocking Stop hook's Claude Code timeout above
+// signals.block_max, so a raised block_max isn't silently cut off at 600 s.
+func blockStopTimeout() int {
+	blockMax := 9 * time.Minute
+	if cfg, err := config.Load(); err == nil && cfg.Signals.BlockMax.Duration > 0 {
+		blockMax = cfg.Signals.BlockMax.Duration
+	}
+	if t := int((blockMax + time.Minute) / time.Second); t > 600 {
+		return t
+	}
+	return 600
 }
 
 // MergeHooks returns settings with fleet's hooks replacing any earlier fleet hooks,

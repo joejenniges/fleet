@@ -26,6 +26,11 @@ func TestMergeHooksIsIdempotentAndPreservesOthers(t *testing.T) {
 	if h["asyncRewake"] != true || !strings.Contains(h["command"].(string), "--wake async") {
 		t.Fatalf("stop hook should be asyncRewake: %v", h)
 	}
+	// Claude Code enforces timeout on asyncRewake hooks (600 s default); the waiter
+	// must be allowed to live as long as a wait can.
+	if to, _ := h["timeout"].(int); to < 24*60*60 {
+		t.Fatalf("async stop hook timeout must cover signals.max_wait: %v", h["timeout"])
+	}
 	blk := MergeHooks(map[string]any{}, "fleet", WakeBlock)["hooks"].(map[string]any)["Stop"].([]any)
 	bh := blk[0].(map[string]any)["hooks"].([]any)[0].(map[string]any)
 	if _, ok := bh["asyncRewake"]; ok || bh["timeout"] != 600 {
