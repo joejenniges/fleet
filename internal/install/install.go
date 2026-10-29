@@ -18,9 +18,21 @@ import (
 //go:embed skill/SKILL.md
 var SkillMD string
 
+// Wake modes for the Stop hook (see hooks.WakeAsync / hooks.WakeBlock).
+const (
+	WakeAsync = "async"
+	WakeBlock = "block"
+)
+
 // HookEntries returns the Claude Code hook configuration for a fleet binary.
 // Timeouts are in seconds (Claude Code's unit).
-func HookEntries(bin string) map[string][]map[string]any {
+//
+// The Stop hook is what lets a waiting agent be woken by a signal:
+//   - async (default): runs in the background with asyncRewake; exit 2 wakes the
+//     idle agent and shows the signal data as a system reminder.
+//   - block: a normal Stop hook that holds the turn open (up to signals.block_max)
+//     and exits 2 so the agent continues. For Claude Code versions without asyncRewake.
+func HookEntries(bin, wake string) map[string][]map[string]any {
 	cmd := func(ev string) string { return quote(bin) + " hook " + ev + " --agent claude" }
 	entry := func(matcher, ev string, timeout int) map[string]any {
 		e := map[string]any{"hooks": []any{map[string]any{"type": "command", "command": cmd(ev), "timeout": timeout}}}
@@ -29,11 +41,20 @@ func HookEntries(bin string) map[string][]map[string]any {
 		}
 		return e
 	}
+	var stop map[string]any
+	if wake == WakeBlock {
+		stop = map[string]any{"hooks": []any{map[string]any{"type": "command",
+			"command": cmd("stop") + " --wake block", "timeout": 600}}}
+	} else {
+		stop = map[string]any{"hooks": []any{map[string]any{"type": "command",
+			"command": cmd("stop") + " --wake async", "asyncRewake": true}}}
+	}
 	return map[string][]map[string]any{
 		"SessionStart":     {entry("", "session-start", 10)},
 		"UserPromptSubmit": {entry("", "user-prompt-submit", 5)},
 		"PreToolUse":       {entry("Bash|Edit|Write|MultiEdit|NotebookEdit", "pre-tool-use", 5)},
 		"PostToolUse":      {entry("Bash", "post-tool-use", 5)},
+		"Stop":             {stop},
 		"SessionEnd":       {entry("", "session-end", 30)},
 	}
 }
@@ -69,7 +90,7 @@ func isFleetHook(cmd string) bool {
 
 // MergeHooks returns settings with fleet's hooks replacing any earlier fleet hooks,
 // leaving everything else untouched.
-func MergeHooks(settings map[string]any, bin string) map[string]any {
+func MergeHooks(settings map[string]any, bin, wake string) map[string]any {
 	if settings == nil {
 		settings = map[string]any{}
 	}
@@ -77,7 +98,7 @@ func MergeHooks(settings map[string]any, bin string) map[string]any {
 	if hooks == nil {
 		hooks = map[string]any{}
 	}
-	for ev, entries := range HookEntries(bin) {
+	for ev, entries := range HookEntries(bin, wake) {
 		var kept []any
 		if cur, ok := hooks[ev].([]any); ok {
 			for _, e := range cur {
@@ -148,7 +169,10 @@ record what works or fails with ` + "`fleet docs add`" + `.
 ` + mdEnd + "\n"
 
 // PlanClaude computes what `fleet install claude` will change.
-func PlanClaude(scope, repoRoot string) (*Plan, error) {
+func PlanClaude(scope, repoRoot, wake string) (*Plan, error) {
+	if wake != WakeBlock {
+		wake = WakeAsync
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, err
@@ -173,7 +197,7 @@ func PlanClaude(scope, repoRoot string) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	p.Settings, _ = json.MarshalIndent(MergeHooks(settings, bin), "", "  ")
+	p.Settings, _ = json.MarshalIndent(MergeHooks(settings, bin, wake), "", "  ")
 	return p, nil
 }
 
@@ -226,7 +250,7 @@ func (p *Plan) Apply(w io.Writer) error {
 
 // Uninstall removes fleet hooks (and the skill for user scope).
 func Uninstall(scope, repoRoot string, w io.Writer) error {
-	p, err := PlanClaude(scope, repoRoot)
+	p, err := PlanClaude(scope, repoRoot, WakeAsync)
 	if err != nil {
 		return err
 	}

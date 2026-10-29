@@ -18,6 +18,12 @@ session_start_timeout = "5s"
 scan_processes = true       # track listeners an agent starts (PostToolUse on Bash)
 scan_min_interval = "3s"
 
+[signals]
+max_wait = "24h"            # waits expire; also caps the background (asyncRewake) waiter
+block_max = "9m"            # longest a `--wake block` Stop hook holds a turn open
+poll_interval = "500ms"
+max_data_bytes = 16384      # signal --data limit (point to a file for more)
+
 [redact]
 # Extra regexes; the whole match is replaced with ***.
 patterns = []

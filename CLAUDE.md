@@ -7,11 +7,11 @@ state of the code and what to do next.
 
 ## State of the scaffold
 
-Phase 1 (DESIGN.md §15) is implemented, not stubbed. What was verified before handoff:
+Phase 1 plus signals/waits (DESIGN.md §11, §16) are implemented, not stubbed. What was verified before handoff:
 
 - `go vet` and `go build` clean; cross-compiles for windows/amd64, darwin/arm64, linux/arm64.
 - Unit tests pass (`policy`, `cmdtext`, `runner`, `install`).
-- `fleet test selfcheck` passes 19/19 on Linux (real subprocesses, real process kills, real
+- `fleet test selfcheck` passes 29/29 on Linux (real subprocesses, real process kills, real
   MCP stdio handshake).
 
 What was **not** verified (do these first):
@@ -31,6 +31,10 @@ What was **not** verified (do these first):
      UserPromptSubmit / PostToolUse, and `permissionDecision: "deny"` +
      `permissionDecisionReason` for PreToolUse;
    - whether `SessionEnd` fires in `claude -p` (headless) mode;
+   - the Stop hook's `asyncRewake: true` field and its semantics (background run; exit 2 wakes
+     the agent with stderr as a system reminder) — documented in the hooks reference as of
+     Oct 2026, but verify on the installed version. If it's missing, install with
+     `fleet install claude --wake block`;
    - CLI flags used by `internal/testkit/claude.go`: `-p`, `--output-format json`,
      `--settings`, `--mcp-config`, `--strict-mcp-config`, `--allowedTools`, `--max-turns`,
      `--model`; and `claude mcp add/remove --scope` used by `internal/install`.
@@ -41,6 +45,14 @@ What was **not** verified (do these first):
    does not resolve symlinks).
 4. **The live scenarios** (`fleet test claude`) have never been executed. Expect to tune
    prompts and timeouts.
+5. **The idle wake path needs a manual check** — headless `claude -p` exits after its turn,
+   so the live suite can only test blocking waits. In two interactive Claude Code sessions:
+   1. Session A: "Run `fleet wait demo:ready --desc 'the demo service is up' --detach`, then
+      end your turn."
+   2. Confirm A goes idle and `fleet waits` shows the wait.
+   3. Session B (or your terminal): `fleet signal demo:ready --data "http://localhost:9999"`.
+   4. A should wake within a second or two and continue with the URL. If it doesn't, check
+      `fleet events` for `wait.woke`, run with `FLEET_DEBUG=1`, and try `--wake block`.
 
 ## First steps
 
@@ -50,7 +62,7 @@ What was **not** verified (do these first):
 go mod tidy                       # adds modernc.org/sqlite, writes go.sum
 go build -o fleet ./cmd/fleet
 go test ./...
-./fleet test selfcheck            # must be 19/19 on every OS
+./fleet test selfcheck            # must be 29/29 on every OS
 
 # then, with Claude Code installed and logged in:
 ./fleet test standup
@@ -66,7 +78,7 @@ go test ./...
 | `cmd/fleet` | `main` |
 | `internal/cli` | cobra commands. Thin: parse flags, call `app`, print. |
 | `internal/app` | **All business logic**: policy proposals/approval, docs, `RunCommand`, status, session context, process scan, SessionEnd cleanup. CLI, MCP and hooks share it. |
-| `internal/hooks` | `fleet hook <event>`: payload parsing, fail-open timeout wrapper, deny/context output |
+| `internal/hooks` | `fleet hook <event>`: payload parsing, fail-open timeout wrapper, deny/context output; `stop.go` is the signal wake (asyncRewake / block) |
 | `internal/mcpserver` | MCP tools over stdio (official go-sdk) |
 | `internal/policy` | Policy files, evaluation (rules most-restrictive, defaults most-specific, lineage), change classification, atomic writes |
 | `internal/store` | SQLite schema (append-only migrations), all queries |
@@ -74,6 +86,7 @@ go test ./...
 | `internal/procs` | gopsutil wrapper: (pid, ctime) identity, ancestry, snapshots, ports, terminate |
 | `internal/runner` | Transparent child execution with output tail capture, signal forwarding |
 | `internal/agentid` | Agent names, resolving "which agent am I" by process ancestry |
+| `internal/app/signals.go`, `internal/store/signals.go`, `internal/cli/signals.go`, `internal/mcpserver/signals.go` | Signals and waits (DESIGN.md §11) |
 | `internal/install` | `fleet install claude`: hooks merge into settings.json, skill, MCP registration |
 | `internal/install/skill/SKILL.md` | The skill agents read (embedded in the binary) |
 | `internal/testkit` | `fleet test …`: standup/teardown, fixtures, selfcheck, live scenarios |
@@ -94,6 +107,11 @@ go test ./...
 - Redact before storing anything that came from a command line or output (`a.Red`).
 
 ## Known gaps / next tasks
+
+- Signals: no cross-machine delivery (would need `fleet serve`); consider Claude Code channels
+  (`notifications/claude/channel`, research preview) as a push alternative to the Stop-hook
+  wake once they leave preview. The Go SDK can declare experimental capabilities but may need
+  a newer version (or a raw JSON-RPC write) to send custom notifications.
 
 - **Phase 2** (DESIGN.md §7, §10): leases, `port allocate`, `browser-mcp`, board, `checkin`,
   preemption flow with `--dry-run`, file-claim enforcement in PreToolUse. Tables `leases`,

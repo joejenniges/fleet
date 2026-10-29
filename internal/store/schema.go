@@ -159,6 +159,38 @@ CREATE TABLE meta (
 	value TEXT NOT NULL
 );
 `,
+	// 2: signals and waits
+	`
+CREATE TABLE signals (
+	id         INTEGER PRIMARY KEY,
+	name       TEXT NOT NULL,
+	data       TEXT,
+	from_agent TEXT,
+	to_agent   TEXT,
+	created_at INTEGER NOT NULL,
+	cleared_at INTEGER
+);
+CREATE INDEX signals_name ON signals(name);
+
+CREATE TABLE waits (
+	id           INTEGER PRIMARY KEY,
+	agent_id     TEXT,
+	signal       TEXT NOT NULL,
+	description  TEXT NOT NULL,
+	repo_root    TEXT,
+	cwd          TEXT,
+	mode         TEXT NOT NULL,
+	fresh        INTEGER NOT NULL DEFAULT 0,
+	created_at   INTEGER NOT NULL,
+	expires_at   INTEGER,
+	satisfied_by INTEGER REFERENCES signals(id),
+	satisfied_at INTEGER,
+	delivered_at INTEGER,
+	cancelled_at INTEGER
+);
+CREATE INDEX waits_signal ON waits(signal);
+CREATE INDEX waits_agent ON waits(agent_id);
+`,
 }
 
 func (s *Store) migrate() error {

@@ -119,14 +119,20 @@ policy_proposals
 policy_comments
             id PK, proposal_id, agent_id, stance (support|oppose|neutral), body, at
 leases      resource PK, kind (port|browser|db|lock|glob), agent_id, expires_at, meta (json)
-messages    id PK, from_agent, to_agent (or '*'), type (preempt|release_request|fyi|policy),
+messages    id PK, from_agent, to_agent (or '*'), type (preempt|release_request|fyi|policy|wait),
             body (json), created_at, delivered_at
+signals     id PK, name, data, from_agent, to_agent (optional target), created_at, cleared_at
+waits       id PK, agent_id, signal, description, repo_root, cwd, mode (block|detach), fresh,
+            created_at, expires_at, satisfied_by → signals, satisfied_at, delivered_at, cancelled_at
 board       key PK, value, agent_id, updated_at
 events      id PK, at, agent_id, kind, detail (json)       -- audit log
 meta        key PK, value                                   -- schema version, last prune, …
 ```
 
 Exactly-once delivery: `UPDATE messages SET delivered_at=? WHERE to_agent=? AND delivered_at IS NULL RETURNING …`.
+Satisfied waits are delivered the same way (`UPDATE waits SET delivered_at … RETURNING`), so a
+signal reaches its waiter exactly once whichever path gets there first: the blocking
+`fleet wait`, the Stop hook, or the inbox in UserPromptSubmit/PostToolUse.
 
 ---
 
@@ -137,17 +143,21 @@ mapping is below; other agents get thin adapters with the same `fleet hook <even
 
 | Event | fleet does | Output to agent |
 |---|---|---|
-| **SessionStart** | Register agent (id, name, cwd, repo, process). Lazy housekeeping. | Context block: your name; other active agents (name, repo, ports); pending policy proposals + how to review; top-N commands for this repo; undelivered messages. |
-| **UserPromptSubmit** | Heartbeat, drain inbox. | Undelivered messages, if any. |
+| **SessionStart** | Register agent (id, name, cwd, repo, process). Lazy housekeeping. | Context block: your name; other active agents (name, repo, ports); other agents' open waits with descriptions + how to signal; pending policy proposals + how to review; top-N commands for this repo; undelivered messages and signals. |
+| **UserPromptSubmit** | Heartbeat, drain inbox (messages + satisfied waits). | Undelivered messages/signals, if any. |
 | **PreToolUse** (Bash) | Match each simple command in the line against known-bad docs → block with the known-good alternative. Block agent attempts to run `fleet policy approve/reject`. Stamp `lastpre:<agent>` (used by the PostToolUse scan). Denials are logged as `hook.denied` events. | Deny + reason, or nothing. |
 | **PreToolUse** (Edit/Write) | Block edits to any `policy.toml` / `config.toml` managed by fleet; point to `fleet policy add`. Phase 2: block edits to paths claimed by another agent. | Deny + reason, or nothing. |
 | **PostToolUse** (Bash) | Record the command as a run (`source=hook`; exit code when the agent reports it; skipped for `fleet run …`, which records itself). Track long-lived processes: descendants of the agent process that listen on a port, **plus** any listener created since the agent's last PreToolUse that no other agent owns (catches `server &`, which is re-parented away from the agent immediately). Heartbeat. | Undelivered messages, if any. |
-| **SessionEnd** | Mark agent ended. Release leases. For each still-running tracked process, evaluate policy: `kill` → terminate; otherwise leave it and flag it as an orphan in `fleet status`. | — |
+| **Stop** | If the agent has open waits, wait for one to be satisfied, then exit 2 with the signal data on stderr. `--wake async` (installed with `asyncRewake`): runs in the background, so the agent goes idle and is woken. `--wake block`: holds the turn open up to `signals.block_max`. Exits 0 immediately when nothing is awaited. See §11. | stderr (exit 2) → shown to Claude as a system reminder / continuation. |
+| **SessionEnd** | Mark agent ended. Release leases. Cancel its waits. For each still-running tracked process, evaluate policy: `kill` → terminate; otherwise leave it and flag it as an orphan in `fleet status`. | — |
 
 Notes:
 
 - `Stop` fires at the end of every turn, not at session end; cleanup belongs in `SessionEnd`.
-- Hook timeouts: 2 s default, 5 s for SessionStart. Configurable.
+- Hook timeouts: fleet's own internal budget is 2 s by default, 5 s for SessionStart
+  (configurable); the Claude Code `timeout` values written by `fleet install` are larger.
+  Claude Code gives all SessionEnd hooks a shared budget (1.5 s by default, raised to the
+  longest per-hook `timeout`, max 60 s); fleet installs SessionEnd with 30 s for cleanup.
 - Port scanning is the slow part on macOS (gopsutil shells out to `lsof`); it only runs in
   PostToolUse for Bash and is skipped if it ran within the last 3 s.
 - Everything a hook prints is untrusted-data-safe: no free text from other agents is injected
@@ -427,7 +437,56 @@ stay machine-local (they'd churn the repo otherwise).
 
 ---
 
-## 11. MCP tools
+## 11. Signals and waits
+
+Lets an agent pause until another agent (or the user) says something is ready, without polling
+or guessing, and lets agents discover what others are waiting for.
+
+```
+fleet wait <name> --desc "what I need" [--timeout 110s | --detach] [--fresh] [--cancel]
+fleet signal <name> [--data "what is ready and where"] [--to agent] [--clear]
+fleet waits [--mine] [--all]          fleet signals
+```
+
+- **The description belongs to the wait; the data belongs to the signal.** `--desc` is the
+  request ("OpenAPI spec for the orders API written to disk"), written so another agent can
+  tell whether its work provides it. `--data` is the answer ("services/orders/openapi.yaml, v2.3").
+- **Discovery.** A new wait is broadcast once to every other active agent (delivered at its
+  next hook), and every SessionStart lists other agents' open waits (same repo first, max 10)
+  with the exact `fleet signal` command. The skill tells agents to signal only once the thing
+  is actually true, and to ignore waits that aren't theirs.
+- **Latched signals.** A signal stays set until `--clear`, so a signal sent before anyone
+  waits is not lost; a new wait is satisfied at registration if a matching signal is set.
+  `--fresh` ignores signals sent before the wait. `--to` limits a signal to one agent's waits.
+- **One open wait per (agent, signal)**: re-running a timed-out `fleet wait` reuses it.
+- **Waiting modes**
+  - *Blocking* (`fleet wait`, MCP `wait_for_signal`): polls the DB (500 ms) until satisfied
+    (exit 0, data printed) or `--timeout` (exit 3; the wait stays registered). Default 110 s,
+    under Claude Code's default 2-minute Bash timeout. Cancelled → exit 4.
+  - *Detached* (`--detach`, MCP `register_wait`): returns at once; the agent ends its turn.
+  - *Wake*: the Stop hook. In `async` mode (default, `asyncRewake: true`) it runs in the
+    background after the turn, so the agent is idle and the user can keep typing; when a wait
+    is satisfied it exits 2 and Claude Code wakes the agent with the data. One background
+    waiter per agent (tracked in `meta` by pid+ctime). It exits quietly if the waits are
+    cancelled/expired, the agent ends, or the agent's process dies (headless sessions don't
+    always fire SessionEnd). `block` mode is the fallback for Claude Code versions without
+    `asyncRewake`. A blocking wait that timed out is also picked up by the Stop hook, so "end
+    your turn" always works.
+  - A signal that arrives while the agent is mid-turn is delivered by the next
+    UserPromptSubmit/PostToolUse hook instead.
+- **Expiry and cleanup**: waits expire after `signals.max_wait` (24 h); SessionEnd and reaping
+  cancel an agent's waits.
+- **Deadlock hint**: `fleet status`, `fleet waits` and session context warn when every active
+  agent (≥2) has an open wait.
+- **Safety**: descriptions and data are redacted and capped (`signals.max_data_bytes`, 16 KB),
+  and always rendered as quoted data, never as instructions.
+- **Not covered**: cross-machine signals (would need a network endpoint such as `fleet serve`
+  writing into the local DB). Claude Code *channels* (`notifications/claude/channel`, research
+  preview) could later replace the Stop-hook wake with true push from `fleet mcp`.
+
+---
+
+## 12. MCP tools
 
 | Tool | Phase |
 |---|---|
@@ -436,6 +495,7 @@ stay machine-local (they'd churn the repo otherwise).
 | `runs_recent` (own / repo history) | 1 |
 | `policy_test`, `policy_propose`, `policy_pending`, `policy_comment` | 1 |
 | `mark_critical`, `annotate_process` | 1 |
+| `list_waits`, `send_signal`, `wait_for_signal` (blocking, ≤300 s), `register_wait` (detached), `cancel_wait` | 1 |
 | `checkin`, `send_message` | 2 |
 | `lease_acquire`, `lease_release`, `allocate_port`, `board_get`, `board_set` | 2 |
 | `note_handoff` | 2 |
@@ -444,10 +504,10 @@ There are deliberately no MCP tools for `approve`, `reject`, `preempt`, or `prio
 
 ---
 
-## 12. Install
+## 13. Install
 
 ```
-fleet install claude [--scope user|project] [--dry-run]
+fleet install claude [--scope user|project] [--wake async|block] [--dry-run]
 ```
 
 - Registers the MCP server (`claude mcp add --scope user fleet -- fleet mcp` if `claude` is on
@@ -464,7 +524,7 @@ Scoop bucket, `go install`.
 
 ---
 
-## 13. Security notes
+## 14. Security notes
 
 - The DB and config files are created `0600`/`0700`; on Windows they live under the user profile.
 - Agent-to-agent messages are typed; free text is displayed as quoted data, never as an instruction.
@@ -474,7 +534,7 @@ Scoop bucket, `go install`.
 
 ---
 
-## 14. Testing
+## 15. Testing
 
 Three layers:
 
@@ -482,12 +542,16 @@ Three layers:
    normalization and redaction, the run wrapper, settings merging.
 2. **`fleet test selfcheck`**: deterministic end-to-end run in a throwaway `FLEET_HOME`.
    Drives every hook with simulated Claude Code payloads, runs `fleet run` and `fleet mcp` as
-   real subprocesses, and really starts and kills fixture processes. 19 checks: registration,
+   real subprocesses, and really starts and kills fixture processes. 29 checks: registration,
    cross-agent visibility, known-bad blocking, approve blocking, policy-file edit blocking,
    proposal queueing, exactly-once broadcast, restrictive auto-apply, per-level `policy test`,
    hook run recording, top-N ordering and suppression (file + marks, per instructions family),
    exit-code passthrough + redaction, auto-critical, SessionEnd kill/spare, reaping, retention
-   compaction, MCP handshake and tool list. No agent needed; suitable for CI on all three OSes.
+   compaction, MCP handshake and tool list; and for signals: wait announcement (once, not to the
+   author), waits in session context, blocking wait woken by another agent's signal, timeout
+   exit 3 + reuse, latching and `--fresh`, `--to` targeting, mid-turn delivery exactly once,
+   Stop hook idle/wake (async) and hold/continue (block), SessionEnd cancelling waits.
+   No agent needed; suitable for CI on all three OSes.
 3. **Live Claude scenarios** (`fleet test standup` → `fleet test claude` → `fleet test teardown`):
    - `standup` creates `<dir>/fleet-home` (FLEET_HOME), `work/` (one git repo per scenario),
      `claude/settings.json` (fleet hooks pointing at this binary, omitted if the user's own
@@ -501,24 +565,25 @@ Three layers:
      bug or a Claude Code behavior change) or **soft** (depends on the agent following
      instructions; reported as a miss, not a failure). `--repeat N` turns soft checks into a rate.
    - Scenarios: `presence`, `broadcast`, `known-bad`, `approve-blocked`, `kill-on-end`,
-     `record-docs`.
+     `record-docs`, `signal` (one session blocks on `fleet wait`; a second, told only its task,
+     must discover the wait from its description and signal it).
    - `teardown` kills every fixture (`--fleet-test-fixture=` processes) and deletes the home.
    - Fixtures are built into the binary (`fleet test serve-port|exit|sleep`, hidden), so tests
      need no Python/Node/shell utilities and behave the same on Windows.
 
-## 15. Phases
+## 16. Phases
 
 1. **Core** ✅ scaffolded: store + migrations, agents/identity, `status`, `run` (+ history,
    redaction, retention, `prune`), policy engine (`test`, `add/remove/set-default`, proposals,
    `pending`, `comment`, `approve/reject`), docs (`add`, `list`, `search`, `top`, `known`,
-   `retire`), hooks (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, SessionEnd),
-   MCP phase-1 tools, `install/uninstall claude`, `fleet test`.
+   `retire`), hooks (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionEnd),
+   signals and waits, MCP phase-1 tools, `install/uninstall claude`, `fleet test`.
 2. **Resources**: leases, ports, `browser-mcp`, board, messages/checkin, preemption, priority,
    handoff notes, file claims enforcement.
 3. **Knowledge+**: recipes, git export/import of docs, pty for `fleet run`.
 4. **Reach**: Codex / Gemini / Cursor adapters, `fleet ui` (TUI), `fleet uninstall`.
 
-## 16. Open questions
+## 17. Open questions
 
 - Should repo-level permissive changes require approval if the repo file is committed and
   reviewed in PRs anyway? (Current answer: yes — PR review happens too late.)
@@ -526,3 +591,9 @@ Three layers:
   `tool_response` shape should be verified and parsed when it includes one.
 - Should `fleet run` auto-suggest `docs add` after a failure followed by a success with the same
   first two tokens? (Likely yes, phase 3.)
+- `asyncRewake` behavior to confirm: does Claude Code keep (or kill) a background Stop hook
+  when the next turn starts, and what happens to it in `claude -p` when the process exits?
+  fleet tolerates either (single-waiter claim, agent-process liveness check), but the answer
+  decides whether `--wake async` works for headless agents or only interactive ones.
+- Should waits carry an optional "who can provide this" hint (repo, agent kind) to make
+  discovery more targeted than "everyone sees everything"?

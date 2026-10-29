@@ -23,22 +23,26 @@ func appRunOpts(args []string, critical bool, reason, purpose string, noRecord b
 }
 
 func hookCmd() *cobra.Command {
-	var kind string
+	var kind, wake string
 	c := &cobra.Command{
-		Use:       "hook <" + joinEvents() + ">",
-		Short:     "Agent hook entry point (reads the hook JSON payload on stdin; always exits 0)",
+		Use:   "hook <" + joinEvents() + ">",
+		Short: "Agent hook entry point (reads the hook JSON payload on stdin)",
+		Long: "Fails open: exits 0 with no output on any error. The one deliberate non-zero exit is `stop` exiting 2\n" +
+			"with signal data on stderr, which wakes (--wake async) or continues (--wake block) a waiting agent.",
 		Args:      cobra.ExactArgs(1),
 		ValidArgs: hooks.Events,
-		Hidden:    false,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !slices.Contains(hooks.Events, args[0]) {
 				return nil // unknown event: fail open
 			}
-			hooks.Main(args[0], kind, os.Stdin, os.Stdout)
+			if code := hooks.Main(args[0], kind, wake, os.Stdin, os.Stdout, os.Stderr); code != 0 {
+				return exitCode(code)
+			}
 			return nil
 		},
 	}
 	c.Flags().StringVar(&kind, "agent", "claude", "agent kind: claude | codex | gemini | cursor | other")
+	c.Flags().StringVar(&wake, "wake", hooks.WakeAsync, "stop hook mode: async (installed with asyncRewake) | block")
 	return c
 }
 
@@ -66,10 +70,10 @@ func mcpCmd() *cobra.Command {
 }
 
 func installCmd() *cobra.Command {
-	var scope string
+	var scope, wake string
 	var dry bool
 	c := &cobra.Command{
-		Use:   "install claude [--scope user|project] [--dry-run]",
+		Use:   "install claude [--scope user|project] [--wake async|block] [--dry-run]",
 		Short: "Wire fleet into an agent: MCP server, hooks, skill",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -77,7 +81,7 @@ func installCmd() *cobra.Command {
 				return fmt.Errorf("only `claude` is supported so far (codex/gemini/cursor adapters are phase 4)")
 			}
 			cwd, _ := os.Getwd()
-			p, err := install.PlanClaude(scope, paths.RepoRoot(cwd))
+			p, err := install.PlanClaude(scope, paths.RepoRoot(cwd), wake)
 			if err != nil {
 				return err
 			}
@@ -97,6 +101,8 @@ func installCmd() *cobra.Command {
 	}
 	c.Flags().StringVar(&scope, "scope", "user", "user (all projects) | project (this repo)")
 	c.Flags().BoolVar(&dry, "dry-run", false, "show what would change")
+	c.Flags().StringVar(&wake, "wake", install.WakeAsync, "how waiting agents are woken: async (asyncRewake; agent goes idle) | "+
+		"block (Stop hook holds the turn, for Claude Code versions without asyncRewake)")
 	return c
 }
 

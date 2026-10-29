@@ -110,7 +110,7 @@ func (s *selfcheck) hook(event, session string, extra map[string]any) (string, m
 	}
 	b, _ := json.Marshal(p)
 	var out bytes.Buffer
-	hooks.Main(event, "claude", bytes.NewReader(b), &out)
+	hooks.Main(event, "claude", hooks.WakeAsync, bytes.NewReader(b), &out, io.Discard)
 	var parsed struct {
 		HSO map[string]any `json:"hookSpecificOutput"`
 	}
@@ -478,12 +478,15 @@ func (s *selfcheck) run() {
 		return nil
 	})
 
+	s.runSignals()
+
 	s.check("MCP server starts over stdio and lists its tools", func() error {
 		names, err := mcpListTools(s.bin, s.repo)
 		if err != nil {
 			return err
 		}
-		for _, want := range []string{"status", "policy_test", "docs_add", "policy_propose"} {
+		for _, want := range []string{"status", "policy_test", "docs_add", "policy_propose",
+			"list_waits", "send_signal", "wait_for_signal", "register_wait"} {
 			if !contains(names, want) {
 				return fmt.Errorf("missing tool %s in %v", want, names)
 			}

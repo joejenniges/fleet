@@ -127,7 +127,7 @@ func Standup(dir string) (*Home, error) {
 func (h *Home) writeClaudeConfig() error {
 	settings := map[string]any{}
 	if !UserHasFleetHooks() {
-		settings = install.MergeHooks(settings, h.Bin)
+		settings = install.MergeHooks(settings, h.Bin, install.WakeAsync)
 	}
 	b, _ := json.MarshalIndent(settings, "", "  ")
 	if err := os.WriteFile(h.SettingsPath(), b, 0o644); err != nil {

@@ -29,14 +29,25 @@ const (
 	PreToolUse       = "pre-tool-use"
 	PostToolUse      = "post-tool-use"
 	SessionEnd       = "session-end"
+	Stop             = "stop"
 )
 
-var Events = []string{SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, SessionEnd}
+var Events = []string{SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionEnd}
+
+// Wake modes for the Stop hook.
+const (
+	// WakeAsync: installed with asyncRewake. The hook runs in the background after
+	// the agent's turn ends and exits 2 when a signal arrives, which wakes the agent.
+	WakeAsync = "async"
+	// WakeBlock: a normal Stop hook that holds the turn open until a signal arrives
+	// (up to signals.block_max), then exits 2 so the agent continues.
+	WakeBlock = "block"
+)
 
 // claudeEventName maps our event names to Claude Code's hookEventName values.
 var claudeEventName = map[string]string{
 	SessionStart: "SessionStart", UserPromptSubmit: "UserPromptSubmit",
-	PreToolUse: "PreToolUse", PostToolUse: "PostToolUse", SessionEnd: "SessionEnd",
+	PreToolUse: "PreToolUse", PostToolUse: "PostToolUse", SessionEnd: "SessionEnd", Stop: "Stop",
 }
 
 // Payload is the subset of the Claude Code hook input fleet uses. Other agents'
@@ -57,8 +68,10 @@ type toolInput struct {
 	NotebookPath string `json:"notebook_path"`
 }
 
-// Main runs a hook. It always returns 0 (fail open).
-func Main(event, kind string, stdin io.Reader, stdout io.Writer) int {
+// Main runs a hook and returns its exit code. Every event fails open (exit 0, no
+// output) on errors. The only non-zero exit is the Stop hook's deliberate 2, which
+// tells Claude Code to wake/continue the agent with the signal data on stderr.
+func Main(event, kind, wake string, stdin io.Reader, stdout, stderr io.Writer) int {
 	raw, err := io.ReadAll(io.LimitReader(stdin, 8<<20))
 	if err != nil {
 		return 0
@@ -67,6 +80,9 @@ func Main(event, kind string, stdin io.Reader, stdout io.Writer) int {
 	if err := json.Unmarshal(raw, &p); err != nil {
 		debugf("bad payload: %v", err)
 		return 0
+	}
+	if event == Stop {
+		return runStop(&p, kind, wake, stderr)
 	}
 	timeout := 2 * time.Second
 	if cfg, err := config.Load(); err == nil {

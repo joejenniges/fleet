@@ -64,7 +64,84 @@ func Scenarios() []Scenario {
 		{"approve-blocked", "an agent asked to approve a policy proposal cannot", scApproveBlocked},
 		{"kill-on-end", "background servers an agent started are killed or spared by policy when its session ends", scKillOnEnd},
 		{"record-docs", "fleet run records runs; the agent records known-bad and valid-command entries from them", scRecordDocs},
+		{"signal", "one session waits on a signal; a second discovers the wait from its description and signals it", scSignal},
 	}
+}
+
+func scSignal(h *Harness, sc string) []Check {
+	dirA, _ := h.Home.NewWorkdir(sc + "-waiter")
+	dirB, _ := h.Home.NewWorkdir(sc + "-provider")
+	f := h.fleetCmd()
+	name := fmt.Sprintf("orders:schema-%d", time.Now().Unix())
+	const desc = "OpenAPI schema for the orders API has been written to disk"
+	// Headless (-p) sessions exit after their turn, so the waiter uses a blocking wait;
+	// the detached/asyncRewake path is covered by selfcheck and the manual check in CLAUDE.md.
+	sa := h.Start(sc+"-waiter", dirA, fmt.Sprintf("You cannot continue until another agent publishes the orders API "+
+		"schema. Wait for it with fleet by running this shell command, with a Bash timeout of at least 200000 ms:\n"+
+		"`%s wait %s --desc %q --timeout 180s`\nWhen it returns, reply with the signal data it printed, verbatim.", f, name, desc))
+
+	var wait *store.Wait
+	WaitFor(120*time.Second, func() bool {
+		a := h.App(dirA)
+		defer a.Close()
+		ws, _ := a.St.ListWaits(store.WaitFilter{Signal: name, Limit: 1})
+		if len(ws) > 0 {
+			wait = ws[0]
+		}
+		return wait != nil
+	})
+	if wait == nil {
+		sa.Wait()
+		return []Check{chk(sc, "waiter registered its wait", true, false, trunc(sa.Output))}
+	}
+	sb := h.Start(sc+"-provider", dirB, "Follow your fleet skill. Your task: write a file named openapi.yaml in the current "+
+		"directory containing the single line `openapi: 3.1.0`. When the file exists, check whether any other agent is "+
+		"waiting on something your work provides, and if so let them know through fleet, including where the file is.").Wait()
+
+	a := h.App(dirB)
+	sigs, _ := a.St.ListSignals(50)
+	var bAgent string
+	if bs := h.AgentsIn(dirB); len(bs) > 0 {
+		bAgent = bs[0].ID
+	}
+	var fromB *store.Signal
+	for _, sg := range sigs {
+		if sg.Name == name && sg.From != "" && sg.From == bAgent {
+			fromB = sg
+		}
+	}
+	fallback := false
+	if fromB == nil {
+		// Keep the HARD delivery check meaningful even if the provider missed it.
+		_, _, _ = a.FireSignal(name, "fallback signal from the test harness", "")
+		fallback = true
+	}
+	a.Close()
+	sa.Wait()
+
+	a = h.App(dirA)
+	got, _ := a.St.GetWait(wait.ID)
+	a.Close()
+	delivered := got != nil && !got.DeliveredAt.IsZero()
+	detail := ""
+	if fallback {
+		detail = "provider did not signal; harness sent a fallback"
+	}
+	return []Check{
+		chk(sc, "waiter registered a wait with its description", true, wait.Description == desc, wait.Description),
+		chk(sc, "provider discovered the wait and signaled it", false, fromB != nil, trunc(sb.Output)),
+		chk(sc, "provider's data says where the file is", false, fromB != nil && strings.Contains(fromB.Data, "openapi.yaml"), dataOf(fromB)),
+		chk(sc, "the blocked `fleet wait` received the signal (delivered once)", true, delivered, detail),
+		chk(sc, "waiter reported the signal data", false,
+			strings.Contains(sa.Output, "openapi.yaml") || strings.Contains(sa.Output, "fallback signal"), trunc(sa.Output)),
+	}
+}
+
+func dataOf(s *store.Signal) string {
+	if s == nil {
+		return ""
+	}
+	return trunc(s.Data)
 }
 
 // ---- session plumbing ----

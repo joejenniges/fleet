@@ -26,7 +26,7 @@ func Execute() int {
 	root.AddCommand(
 		statusCmd(), whoamiCmd(), runCmd(), runsCmd(), policyCmd(), docsCmd(),
 		hookCmd(), mcpCmd(), installCmd(), uninstallCmd(), pruneCmd(), msgCmd(), priorityCmd(),
-		eventsCmd(), versionCmd(), testCmd(),
+		eventsCmd(), versionCmd(), testCmd(), signalCmd(), waitCmd(), waitsCmd(), signalsCmd(),
 		planned("preempt", "Ask a lower-priority agent to shelve and release resources (phase 2, DESIGN.md §7)"),
 		planned("lease", "Acquire/release leases on ports, browser profiles, DBs, paths (phase 2, DESIGN.md §10)"),
 		planned("port", "Allocate a free port leased to the caller (phase 2)"),

@@ -16,6 +16,10 @@ figured out. fleet is one cross-platform binary that gives them:
   are blocked automatically with the fix; the most-used ones are shown to every new session.
 - **Reviewed policy changes** — agents propose; conservative changes apply immediately,
   anything that could make fleet kill more waits for you.
+- **Signals between agents** — an agent waits for something another agent produces
+  (`fleet wait orders:schema-published --desc "…" --detach`) and goes idle; other agents see
+  the description, and the one that provides it runs `fleet signal … --data "…"`, which wakes
+  the waiter with the data.
 
 See [DESIGN.md](DESIGN.md) for the full design.
 
@@ -29,7 +33,8 @@ fleet test selfcheck                                    # verify everything work
 
 `fleet install claude --scope project` installs into the current repo instead and adds a
 short coordination section to its `CLAUDE.md`. `fleet install claude --dry-run` shows the
-changes first. `fleet uninstall claude` removes them.
+changes first. `fleet uninstall claude` removes them. `--wake block` installs the blocking
+Stop hook instead of the background `asyncRewake` one, for Claude Code versions without it.
 
 ## Everyday commands
 
@@ -50,6 +55,11 @@ fleet policy pending                           # review agents' proposals (--for
 fleet policy approve 7                         # you only, from your own terminal
 fleet policy files                             # which policy files apply here
 fleet events                                   # audit log
+
+fleet wait orders:schema-published --desc "OpenAPI spec for the orders API written to disk" --detach
+fleet waits                                    # who is waiting for what, and why
+fleet signal orders:schema-published --data "services/orders/openapi.yaml (v2.3)"
+fleet signal web:dev-server-up --clear         # signals stay set until cleared
 ```
 
 ## Testing after install

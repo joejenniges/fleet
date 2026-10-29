@@ -15,10 +15,18 @@ import (
 )
 
 type Config struct {
-	Runs   Runs   `toml:"runs"`
-	Docs   Docs   `toml:"docs"`
-	Hooks  Hooks  `toml:"hooks"`
-	Redact Redact `toml:"redact"`
+	Runs    Runs    `toml:"runs"`
+	Docs    Docs    `toml:"docs"`
+	Hooks   Hooks   `toml:"hooks"`
+	Redact  Redact  `toml:"redact"`
+	Signals Signals `toml:"signals"`
+}
+
+type Signals struct {
+	MaxWait      dur.Duration `toml:"max_wait"`       // waits expire after this; also caps the background waiter
+	BlockMax     dur.Duration `toml:"block_max"`      // longest a blocking Stop hook (--wake block) holds a turn
+	PollInterval dur.Duration `toml:"poll_interval"`  // how often waiters check the database
+	MaxDataBytes int          `toml:"max_data_bytes"` // cap on signal data
 }
 
 type Runs struct {
@@ -64,6 +72,12 @@ func Defaults() Config {
 			SessionStartTime: dur.Duration{Duration: 5 * time.Second},
 			ScanProcesses:    true,
 			ScanMinInterval:  dur.Duration{Duration: 3 * time.Second},
+		},
+		Signals: Signals{
+			MaxWait:      dur.Duration{Duration: 24 * time.Hour},
+			BlockMax:     dur.Duration{Duration: 9 * time.Minute},
+			PollInterval: dur.Duration{Duration: 500 * time.Millisecond},
+			MaxDataBytes: 16 * 1024,
 		},
 	}
 }

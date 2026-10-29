@@ -103,7 +103,12 @@ func (s *Store) EndAgent(id string) error {
 	if _, err := s.DB.Exec(`UPDATE agents SET status = 'ended', ended_at = ? WHERE id = ?`, now, id); err != nil {
 		return err
 	}
-	_, err := s.DB.Exec(`DELETE FROM leases WHERE agent_id = ?`, id)
+	if _, err := s.DB.Exec(`DELETE FROM leases WHERE agent_id = ?`, id); err != nil {
+		return err
+	}
+	// An ended agent is no longer waiting for anything; drop its waits so other
+	// agents stop seeing them.
+	_, err := s.CancelWaits(id, "")
 	return err
 }
 

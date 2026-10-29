@@ -9,6 +9,7 @@ const (
 	MsgReleaseRequest = "release_request"
 	MsgFYI            = "fyi"
 	MsgPolicy         = "policy"
+	MsgWait           = "wait" // another agent registered a wait (body: signal, description, waiter, repo)
 )
 
 type Message struct {

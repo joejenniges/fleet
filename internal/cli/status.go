@@ -49,6 +49,12 @@ func statusCmd() *cobra.Command {
 				dur.Ago(v.LastSeen, now), me)
 			fmt.Printf("    %s\n", v.Cwd)
 			printProcs(v.Processes)
+			for _, w := range v.Waits {
+				fmt.Printf("    ⏳ waiting on `%s` (%s, %s): %s\n", w.Signal, w.Mode, dur.Ago(w.CreatedAt, now), trunc(w.Description, 80))
+			}
+		}
+		if st.AllWaiting {
+			fmt.Println("\nWARNING: every active agent is waiting on a signal; nobody may be left to send one.")
 		}
 		if len(st.Orphans) > 0 {
 			fmt.Printf("\nOrphaned processes (their agent ended):\n")
